@@ -2,6 +2,7 @@ fn main() {
     let mut s1 = String::from("hello");
 
     borrow(&s1);
+
     borrow_mut(&mut s1);
 }
 
