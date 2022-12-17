@@ -11,7 +11,7 @@ fn main() {
 }
 
 #[derive(Debug)]
-struct MacAddress([u8; 6]);
+struct MacAddress([u8; 6]); //ニュータイプパターン
 
 impl Display for MacAddress {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
