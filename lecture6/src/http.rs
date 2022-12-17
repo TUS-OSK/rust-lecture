@@ -1,6 +1,6 @@
-use std::{fmt, collections::BTreeMap, net::{IpAddr, Ipv4Addr}};
+use std::{fmt, collections::BTreeMap, net::{IpAddr, Ipv4Addr}, os::unix::io::AsRawFd};
 
-use smoltcp::{iface::{NeighborCache, Routes, InterfaceBuilder}, wire::{IpAddress, EthernetAddress, IpCidr, Ipv4Address}, socket::{TcpSocket, TcpSocketBuffer}, phy::TunTapInterface};
+use smoltcp::{iface::{NeighborCache, Routes, EthernetInterfaceBuilder}, wire::{IpAddress, EthernetAddress, IpCidr, Ipv4Address}, socket::{TcpSocket, TcpSocketBuffer, SocketSet}, phy::{TapInterface, wait as phy_wait}, time::Instant};
 use url::Url;
 
 #[derive(Debug)]
@@ -35,7 +35,7 @@ fn random_port() -> u16 {
 }
 
 pub fn get(
-    tap: TunTapInterface,
+    tap: TapInterface,
     mac: EthernetAddress,
     addr: IpAddr,
     url: Url,
@@ -54,12 +54,70 @@ pub fn get(
     let mut routes = Routes::new(BTreeMap::new());
     let default_gateway = Ipv4Address::new(192, 168, 42, 100);
     routes.add_default_ipv4_route(default_gateway).unwrap();
-    let mut iface = InterfaceBuilder::new(tap, vec![])
-        .hardware_addr(smoltcp::wire::HardwareAddress::Ethernet(mac))
+    let mut iface = EthernetInterfaceBuilder::new(tap)
+        .ethernet_addr(mac)
         .neighbor_cache(neighbor_cache)
         .ip_addrs(ip_addrs)
         .routes(routes)
         .finalize();
 
     let mut sockets = SocketSet::new(vec![]);
+    let tcp_handle = sockets.add(tcp_socket);
+
+    let http_header = format!(
+        "GET {} HTTP/1.0\r\nHost: {}\r\nConnection: close\r\n\r\n",
+        url.path(),
+        domain_name
+    );
+
+    let mut state = HttpState::Connect;
+    'http: loop {
+        let timestamp = Instant::now();
+        match iface.poll(&mut sockets, timestamp) {
+            Ok(_) => {}
+            Err(smoltcp::Error::Unrecognized) => {}
+            Err(e) => {
+                eprintln!("error: {:?}", e);
+            }
+        }
+
+        {
+            let mut socket = sockets.get::<TcpSocket>(tcp_handle);
+
+            state = match state {
+                HttpState::Connect if !socket.is_active() => {
+                    eprintln!("connecting: {}", addr);
+                    socket.connect((addr, 80), random_port())?;
+                    HttpState::Request
+                }
+
+                HttpState::Request if socket.may_send() => {
+                    eprintln!("sending request");
+                    socket.send_slice(http_header.as_ref())?;
+                    HttpState::Response
+                }
+
+                HttpState::Response if socket.can_recv() => {
+                    socket.recv(|raw_data| {
+                        let output = String::from_utf8_lossy(raw_data);
+                        println!("{}", output);
+                        (raw_data.len(), ())
+                    })?;
+                    HttpState::Response
+                }
+
+                HttpState::Response if !socket.may_recv() => {
+                    eprintln!("receive complete response");
+                    break 'http;
+                }
+                _ => state,
+            }
+        }
+
+        println!("{:?}", state);
+
+        phy_wait(fd, iface.poll_delay(&sockets, timestamp)).expect("wait error");
+    }
+
+    Ok(())
 }

@@ -1,6 +1,6 @@
 use clap::Parser;
 use url::Url;
-use smoltcp::phy::TunTapInterface;
+use smoltcp::phy::TapInterface;
 
 mod dns;
 mod ethernet;
@@ -18,11 +18,11 @@ fn main() {
         return;
     }
 
-    let tap = TunTapInterface::new(&args.tap_device).expect("error: unable to use as a network device");
+    let tap = TapInterface::new(&args.tap_device).expect("error: unable to use as a network device");
 
     let domain_name = url.host_str().expect("domain name required");
 
-    let addr = dns::resolve(args.dns_server).unwrap().unwrap();
+    let addr = dns::resolve(&args.dns_server, domain_name).unwrap().unwrap();
 
     let mac = ethernet::MacAddress::new().into();
 
